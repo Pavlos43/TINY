@@ -48,40 +48,41 @@ int sys_ThreadJoin(Tid_t tid, int* exitval)
   PTCB* ptcb_id=(PTCB*)tid; //cast so we can work with the tid as a ptcb
   PCB* curpcb= CURPROC;
   rlnode* search_for_ptcb =rlist_find(&curpcb->ptcb_list, ptcb_id, NULL);
-  if(search_for_ptcb!=NULL){
-    if(tid!=sys_ThreadSelf()){
-      if(ptcb_id->detached!=1){
-        
-        ptcb_id->refcount++;
+  
+  if (search_for_ptcb == NULL){
+    return -1;  
+  }
+  
 
-        while(ptcb_id->detached==0 && ptcb_id->exited==0){
-          kernel_wait(&ptcb_id->exit_cv,SCHED_USER);
-        }
+  if(tid==sys_ThreadSelf()){
 
-        ptcb_id->refcount--;
-
-        if(ptcb_id->detached==1){//running thread detached
-        return -1;
-        }
-
-        if (exitval != NULL){
-          *exitval=ptcb_id->exitval;
-          if (ptcb_id->refcount == 0) {
-          rlist_remove(&ptcb_id->ptcb_list_node);
-          free(ptcb_id);
-          }
-        }
-        
-        return 0;
-      }else{
-        return -1;  
-      }
-    }else{
-    return -1;
-    }
-  }else{
     return -1;
   }
+
+  if(ptcb_id->detached==1){
+    return -1;
+  }
+        
+  ptcb_id->refcount++;
+
+  while(ptcb_id->detached==0 && ptcb_id->exited==0){
+       kernel_wait(&ptcb_id->exit_cv,SCHED_USER);
+  }
+
+  ptcb_id->refcount--;
+
+  if(ptcb_id->detached==1){//running thread detached
+    return -1;
+  }
+  if (exitval != NULL){
+    *exitval=ptcb_id->exitval;
+  }
+
+  if (ptcb_id->refcount == 0) {
+  rlist_remove(&ptcb_id->ptcb_list_node);
+  free(ptcb_id);
+  }     
+  return 0;
 }
 
 /**
@@ -93,17 +94,17 @@ int sys_ThreadDetach(Tid_t tid)
   PCB* curpcb= CURPROC;
   rlnode* search_for_ptcb =rlist_find(&curpcb->ptcb_list, ptcb_id, NULL);
 
-  if(search_for_ptcb!=NULL){
-    if(ptcb_id->exited==1){
-      return -1;
-    }else{
-      ptcb_id->detached=1;
-      kernel_broadcast(&ptcb_id->exit_cv);
-      return 0;
-    }
-  }else{
+  if(search_for_ptcb==NULL){
     return -1;
   }
+  if(ptcb_id->exited==1){
+    return -1;
+  }
+  
+  ptcb_id->detached=1;
+  kernel_broadcast(&ptcb_id->exit_cv);
+  
+  return 0;
 }
 
 /**

@@ -36,7 +36,7 @@ CCB cctx[MAX_CORES];
 */
 #define CURTHREAD (CURCORE.current_thread)
 
-
+#define PRIORIY_QUEUES 2
 /*
 	This can be used in the preemptive context to
 	obtain the current thread.
@@ -225,7 +225,8 @@ void release_TCB(TCB* tcb)
   Both of these structures are protected by @c sched_spinlock.
 */
 
-rlnode SCHED; /* The scheduler queue */
+rlnode SCHED[PRIORIY_QUEUES]; /* The scheduler queue where top 
+																	priority belong at level 2*/
 rlnode TIMEOUT_LIST; /* The list of threads with a timeout */
 Mutex sched_spinlock = MUTEX_INIT; /* spinlock for scheduler queue */
 
@@ -268,7 +269,7 @@ static void sched_register_timeout(TCB* tcb, TimerDuration timeout)
 static void sched_queue_add(TCB* tcb)
 {
 	/* Insert at the end of the scheduling list */
-	rlist_push_back(&SCHED, &tcb->sched_node);
+	rlist_push_back(&SCHED[tcb->priority], &tcb->sched_node);
 
 	/* Restart possibly halted cores */
 	cpu_core_restart_one();
@@ -327,15 +328,29 @@ static void sched_wakeup_expired_timeouts()
 static TCB* sched_queue_select(TCB* current)
 {
 	/* Get the head of the SCHED list */
-	rlnode* sel = rlist_pop_front(&SCHED);
+	rlnode* sel=rlist_pop_front(&SCHED[current->priority])
+	if(sel!=NULL){
+		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
 
-	TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
+		if (next_thread == NULL)
+			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
 
-	if (next_thread == NULL)
-		next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
+		next_thread->its = QUANTUM;
+	}else if(sel!=NULL){
+		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
 
-	next_thread->its = QUANTUM;
+		if (next_thread == NULL)
+			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
 
+		next_thread->its = QUANTUM;
+	}else{
+		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
+
+		if (next_thread == NULL)
+			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
+
+		next_thread->its = QUANTUM;
+	}
 	return next_thread;
 }
 
@@ -401,10 +416,14 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause,
 		preempt_on;
 }
 
-/* This function is the entry point to the scheduler's context switching */
+/*Variable for number of calls*/
+int Number_of_calls=0;
 
+/* This function is the entry point to the scheduler's context switching */
 void yield(enum SCHED_CAUSE cause)
-{
+{ 
+	Number_of_calls+=1;
+
 	/* Reset the timer, so that we are not interrupted by ALARM */
 	TimerDuration remaining = bios_cancel_timer();
 
@@ -436,6 +455,15 @@ void yield(enum SCHED_CAUSE cause)
 
 	Mutex_Unlock(&sched_spinlock);
 
+	if(cause==SCHED_QUANTUM){
+		current->priority--;
+	}else if(cause==SCHED_IO){
+		if(current->priority!=2){
+			current->priority++;
+		}
+	}else if(cause==SCHED_MUTEX){
+		current->priority--;
+	}
 	/* Switch contexts */
 	if (current != next) {
 		CURTHREAD = next;
