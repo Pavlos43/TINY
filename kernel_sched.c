@@ -328,28 +328,19 @@ static void sched_wakeup_expired_timeouts()
 static TCB* sched_queue_select(TCB* current)
 {
 	/* Get the head of the SCHED list */
-	rlnode* sel=rlist_pop_front(&SCHED[current->priority])
-	if(sel!=NULL){
-		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
-
-		if (next_thread == NULL)
-			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
-
-		next_thread->its = QUANTUM;
-	}else if(sel!=NULL){
-		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
-
-		if (next_thread == NULL)
-			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
-
-		next_thread->its = QUANTUM;
-	}else{
-		TCB* next_thread = sel->tcb; /* When the list is empty, this is NULL */
-
-		if (next_thread == NULL)
-			next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
-
-		next_thread->its = QUANTUM;
+	TCB* next_thread=NOTHREAD;
+	for(int i=PRIORIY_QUEUES; i==0; i--){
+		rlnode* sel=rlist_pop_front(&SCHED[i]);
+		assert(sel!=NULL);
+		next_thread = sel->tcb; /* When the list is empty, this is NULL */
+		assert(next_thread!=NULL);
+		if(sel!=NULL){
+			if (next_thread == NULL && i==0){
+				next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
+			}
+			next_thread->its = QUANTUM;
+			break;
+		}	
 	}
 	return next_thread;
 }
@@ -416,13 +407,32 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause,
 		preempt_on;
 }
 
-/*Variable for number of calls*/
-int Number_of_calls=0;
+
+
+void boost_threads(){
+	int remaining_tcbs=1; 
+	for(int i=PRIORIY_QUEUES-1; i==0;i--){
+		while (remaining_tcbs!=0){
+			rlnode* sel=rlist_pop_front(&SCHED[i]);
+			if(sel!=NULL){
+				rlist_push_back(&SCHED[i+1],&sel);
+			}else{
+				remaining_tcbs=0;
+			}
+		}
+		remaining_tcbs=1;
+	}
+}
+
+int keepCount() {
+    static int count = 0;  // Static variable to retain its value across calls
+    count++;  // Increment the counter
+    return count;
+}
 
 /* This function is the entry point to the scheduler's context switching */
 void yield(enum SCHED_CAUSE cause)
 { 
-	Number_of_calls+=1;
 
 	/* Reset the timer, so that we are not interrupted by ALARM */
 	TimerDuration remaining = bios_cancel_timer();
@@ -458,16 +468,23 @@ void yield(enum SCHED_CAUSE cause)
 	if(cause==SCHED_QUANTUM){
 		current->priority--;
 	}else if(cause==SCHED_IO){
-		if(current->priority!=2){
+		if(current->priority!=PRIORIY_QUEUES){
 			current->priority++;
 		}
 	}else if(cause==SCHED_MUTEX){
-		current->priority--;
+		if(current->curr_cause==SCHED_MUTEX && current->last_cause==SCHED_MUTEX){
+			current->priority--;	
+		}
 	}
 	/* Switch contexts */
 	if (current != next) {
 		CURTHREAD = next;
 		cpu_swap_context(&current->context, &next->context);
+	}
+
+	int Number_of_calls=keepCount();
+	if(Number_of_calls==50){
+		boost_threads();
 	}
 
 	/* This is where we get after we are switched back on! A long time

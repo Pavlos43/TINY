@@ -257,6 +257,11 @@ void sleep_releasing(Thread_state newstate, Mutex* mx, enum SCHED_CAUSE cause, T
   and possibly switch to a different thread. The scheduler may decide that 
   it will renew the quantum for the current thread.
  */
+
+void boost_threads();
+
+int keepCount();
+
 void yield(enum SCHED_CAUSE cause);
 
 /**
