@@ -11,7 +11,7 @@
 #include <valgrind/valgrind.h>
 #endif
 
-
+int yield_counter=0;
 /********************************************
 	
 	Core table and CCB-related declarations.
@@ -164,6 +164,7 @@ TCB* spawn_thread(PCB* pcb, void (*func)())
 	tcb->phase = CTX_CLEAN;
 	tcb->thread_func = func;
 	tcb->wakeup_time = NO_TIMEOUT;
+	tcb->priority=PRIORIY_QUEUES;
 	rlnode_init(&tcb->sched_node, tcb); /* Intrusive list node */
 
 	tcb->its = QUANTUM;
@@ -226,7 +227,7 @@ void release_TCB(TCB* tcb)
 */
 
 rlnode SCHED[PRIORIY_QUEUES]; /* The scheduler queue where top 
-																	priority belong at level 2*/
+								priority belong at level 2*/
 rlnode TIMEOUT_LIST; /* The list of threads with a timeout */
 Mutex sched_spinlock = MUTEX_INIT; /* spinlock for scheduler queue */
 
@@ -327,22 +328,24 @@ static void sched_wakeup_expired_timeouts()
 */
 static TCB* sched_queue_select(TCB* current)
 {
+	rlnode* sel=NULL;
 	/* Get the head of the SCHED list */
-	TCB* next_thread=NOTHREAD;
-	for(int i=PRIORIY_QUEUES; i==0; i--){
-		rlnode* sel=rlist_pop_front(&SCHED[i]);
-		assert(sel!=NULL);
-		next_thread = sel->tcb; /* When the list is empty, this is NULL */
-		assert(next_thread!=NULL);
-		if(sel!=NULL){
-			if (next_thread == NULL && i==0){
-				next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
-			}
-			next_thread->its = QUANTUM;
+	for(int i=PRIORIY_QUEUES; i>=0; i--){
+		if(!is_rlist_empty(&SCHED[i])){
+			sel=rlist_pop_front(&SCHED[i]);
 			break;
-		}	
+		}
 	}
-	return next_thread;
+
+	TCB* next_thread=NULL;
+	if(sel!=NULL){
+		next_thread = sel->tcb;
+	}
+	if (next_thread == NULL){
+		next_thread = (current->state == READY) ? current : &CURCORE.idle_thread;
+	}
+	next_thread->its = QUANTUM;
+	return next_thread;	
 }
 
 /*
@@ -410,30 +413,22 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause,
 
 
 void boost_threads(){
-	int remaining_tcbs=1; 
-	for(int i=PRIORIY_QUEUES-1; i==0;i--){
-		while (remaining_tcbs!=0){
+	for(int i=2-1; i>=0;i--){
+		while (!is_rlist_empty(&SCHED[i])){
 			rlnode* sel=rlist_pop_front(&SCHED[i]);
-			if(sel!=NULL){
-				rlist_push_back(&SCHED[i+1],&sel);
-			}else{
-				remaining_tcbs=0;
-			}
+			sel->tcb->priority++;
+			rlist_push_back(&SCHED[sel->tcb->priority],sel);
 		}
-		remaining_tcbs=1;
 	}
+	yield_counter=0;	
 }
 
-int keepCount() {
-    static int count = 0;  // Static variable to retain its value across calls
-    count++;  // Increment the counter
-    return count;
-}
+
 
 /* This function is the entry point to the scheduler's context switching */
 void yield(enum SCHED_CAUSE cause)
 { 
-
+	yield_counter++;
 	/* Reset the timer, so that we are not interrupted by ALARM */
 	TimerDuration remaining = bios_cancel_timer();
 
@@ -443,7 +438,21 @@ void yield(enum SCHED_CAUSE cause)
 	TCB* current = CURTHREAD; /* Make a local copy of current process, for speed */
 
 	Mutex_Lock(&sched_spinlock);
-
+	if(cause==SCHED_QUANTUM){
+		if(current->priority>0){
+			current->priority--;
+		}
+	}else if(cause==SCHED_IO){
+		if(current->priority!=PRIORIY_QUEUES){
+			current->priority++;
+		}
+	}else if(cause==SCHED_MUTEX){
+		if(current->last_cause==SCHED_MUTEX){
+			if(current->priority>0){
+				current->priority--;
+			}	
+		}
+	}
 	/* Update CURTHREAD state */
 	if (current->state == RUNNING)
 		current->state = READY;
@@ -465,28 +474,16 @@ void yield(enum SCHED_CAUSE cause)
 
 	Mutex_Unlock(&sched_spinlock);
 
-	if(cause==SCHED_QUANTUM){
-		current->priority--;
-	}else if(cause==SCHED_IO){
-		if(current->priority!=PRIORIY_QUEUES){
-			current->priority++;
-		}
-	}else if(cause==SCHED_MUTEX){
-		if(current->curr_cause==SCHED_MUTEX && current->last_cause==SCHED_MUTEX){
-			current->priority--;	
-		}
-	}
 	/* Switch contexts */
 	if (current != next) {
 		CURTHREAD = next;
 		cpu_swap_context(&current->context, &next->context);
 	}
 
-	int Number_of_calls=keepCount();
-	if(Number_of_calls==50){
+	if(yield_counter==50){
 		boost_threads();
 	}
-
+	
 	/* This is where we get after we are switched back on! A long time
 	   may have passed. Start a new timeslice...
 	  */
@@ -566,7 +563,9 @@ static void idle_thread()
  */
 void initialize_scheduler()
 {
-	rlnode_init(&SCHED, NULL);
+	for(int i=PRIORIY_QUEUES;i>=0;i--){
+		rlnode_init(&SCHED[i], NULL);
+	}
 	rlnode_init(&TIMEOUT_LIST, NULL);
 }
 
