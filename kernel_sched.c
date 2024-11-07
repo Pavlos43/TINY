@@ -6,6 +6,7 @@
 #include "kernel_proc.h"
 #include "kernel_sched.h"
 #include "tinyos.h"
+#include "util.h"
 
 #ifndef NVALGRIND
 #include <valgrind/valgrind.h>
@@ -35,8 +36,8 @@ CCB cctx[MAX_CORES];
 	This must only be used in non-preemptive context.
 */
 #define CURTHREAD (CURCORE.current_thread)
-
-#define PRIORIY_QUEUES 2
+#define MYC 100
+#define PRIORIY_QUEUES 10
 /*
 	This can be used in the preemptive context to
 	obtain the current thread.
@@ -164,7 +165,7 @@ TCB* spawn_thread(PCB* pcb, void (*func)())
 	tcb->phase = CTX_CLEAN;
 	tcb->thread_func = func;
 	tcb->wakeup_time = NO_TIMEOUT;
-	tcb->priority=PRIORIY_QUEUES;
+	tcb->priority=PRIORIY_QUEUES-1;
 	rlnode_init(&tcb->sched_node, tcb); /* Intrusive list node */
 
 	tcb->its = QUANTUM;
@@ -330,7 +331,7 @@ static TCB* sched_queue_select(TCB* current)
 {
 	rlnode* sel=NULL;
 	/* Get the head of the SCHED list */
-	for(int i=PRIORIY_QUEUES; i>=0; i--){
+	for(int i=PRIORIY_QUEUES-1; i>=0; i--){
 		if(!is_rlist_empty(&SCHED[i])){
 			sel=rlist_pop_front(&SCHED[i]);
 			break;
@@ -413,14 +414,14 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause,
 
 
 void boost_threads(){
-	for(int i=2-1; i>=0;i--){
+	rlnode* sel;
+	for(int i=PRIORIY_QUEUES-2; i>=0;i--){
 		while (!is_rlist_empty(&SCHED[i])){
-			rlnode* sel=rlist_pop_front(&SCHED[i]);
+			sel=rlist_pop_front(&SCHED[i]);
 			sel->tcb->priority++;
 			rlist_push_back(&SCHED[sel->tcb->priority],sel);
 		}
 	}
-	yield_counter=0;	
 }
 
 
@@ -428,7 +429,7 @@ void boost_threads(){
 /* This function is the entry point to the scheduler's context switching */
 void yield(enum SCHED_CAUSE cause)
 { 
-	yield_counter++;
+	
 	/* Reset the timer, so that we are not interrupted by ALARM */
 	TimerDuration remaining = bios_cancel_timer();
 
@@ -438,21 +439,30 @@ void yield(enum SCHED_CAUSE cause)
 	TCB* current = CURTHREAD; /* Make a local copy of current process, for speed */
 
 	Mutex_Lock(&sched_spinlock);
-	if(cause==SCHED_QUANTUM){
-		if(current->priority>0){
-			current->priority--;
-		}
-	}else if(cause==SCHED_IO){
-		if(current->priority!=PRIORIY_QUEUES){
-			current->priority++;
-		}
-	}else if(cause==SCHED_MUTEX){
-		if(current->last_cause==SCHED_MUTEX){
+	yield_counter++;
+	
+	switch(cause){
+		case SCHED_QUANTUM:
 			if(current->priority>0){
 				current->priority--;
-			}	
-		}
+			}
+			break;
+		case SCHED_IO:
+			if(current->priority < PRIORIY_QUEUES-1){
+				current->priority++;
+			}
+			break;
+		case SCHED_MUTEX:
+			if(current->last_cause==SCHED_MUTEX){
+				if(current->priority>0){
+					current->priority--;
+				}	
+			}
+			break;
+		default:
+			break;
 	}
+	
 	/* Update CURTHREAD state */
 	if (current->state == RUNNING)
 		current->state = READY;
@@ -469,6 +479,11 @@ void yield(enum SCHED_CAUSE cause)
 	TCB* next = sched_queue_select(current);
 	assert(next != NULL);
 
+	if(yield_counter==MYC){
+		boost_threads();
+		yield_counter=0;	
+	}
+
 	/* Save the current TCB for the gain phase */
 	CURCORE.previous_thread = current;
 
@@ -478,10 +493,6 @@ void yield(enum SCHED_CAUSE cause)
 	if (current != next) {
 		CURTHREAD = next;
 		cpu_swap_context(&current->context, &next->context);
-	}
-
-	if(yield_counter==50){
-		boost_threads();
 	}
 	
 	/* This is where we get after we are switched back on! A long time
@@ -563,7 +574,7 @@ static void idle_thread()
  */
 void initialize_scheduler()
 {
-	for(int i=PRIORIY_QUEUES;i>=0;i--){
+	for(int i=PRIORIY_QUEUES-1;i>=0;i--){
 		rlnode_init(&SCHED[i], NULL);
 	}
 	rlnode_init(&TIMEOUT_LIST, NULL);

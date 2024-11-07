@@ -260,8 +260,6 @@ void sleep_releasing(Thread_state newstate, Mutex* mx, enum SCHED_CAUSE cause, T
 
 void boost_threads();
 
-int keepCount();
-
 void yield(enum SCHED_CAUSE cause);
 
 /**
